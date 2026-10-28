@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Who ライブ話者認識</title>
+<style>
+  :root { --bg: #f7f7f5; --fg: #1b1b1b; --muted: #6b6b6b; --card: #fff; --line: #e2e2de; --accent: #2f6fde; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #131313; --fg: #ececec; --muted: #9a9a9a; --card: #1d1d1d; --line: #323232; --accent: #6f9bf0; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 system-ui, -apple-system, "Hiragino Sans", sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 28px 0 8px; color: var(--muted); font-weight: 600; }
+  .sub, .note { color: var(--muted); font-size: 13px; margin: 0; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 16px 0 4px; }
+  button { font: inherit; font-weight: 600; padding: 10px 22px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+  button.on { background: #d64545; }
+  button.ghost { background: none; color: var(--accent); padding: 10px 8px; }
+  button:disabled { opacity: .5; cursor: default; }
+  select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .stat span { display: block; font-size: 12px; color: var(--muted); }
+  .stat b { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .timeline { min-height: 48px; }
+  .row { display: flex; align-items: center; gap: 10px; height: 26px; }
+  .row .lab { width: 56px; font-size: 13px; font-weight: 600; flex: none; }
+  .lane { position: relative; flex: 1; height: 14px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .lane i { position: absolute; top: 0; bottom: 0; border-radius: 2px; }
+  .list { padding: 4px 12px; max-height: 360px; overflow-y: auto; }
+  .list p { margin: 8px 0; display: flex; gap: 8px; align-items: baseline; }
+  .chip { color: #fff; font-size: 12px; padding: 1px 8px; border-radius: 99px; flex: none; }
+  .t { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; flex: none; }
+  .ignored { color: var(--muted); text-decoration: line-through; }
+  .interim { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Who ライブ話者認識</h1>
+  <p class="sub">マイクの音声を少しずつローカルの Who (Core ML / Neural Engine) へ送り、話者を判定します。新しい声は約10秒ひとりで話すと「話者 A」「話者 B」…と番号が付き、その番号は会話の終わりまで変わりません。本人の声を登録すると、発話ごとに「本人なら STT・AI へ送る / 他の人なら無視」も判定します。</p>
+
+  <h2>1. 本人の声を登録 (任意)</h2>
+  <div class="controls">
+    <button id="enroll">本人の声を登録 (15秒)</button>
+    <button id="unenroll" class="ghost" hidden>登録を解除</button>
+    <span class="note" id="enrollStatus">未登録。本人だけが話している状態で15秒録ります。</span>
+  </div>
+
+  <h2>2. 録音</h2>
+  <div class="controls">
+    <button id="start">録音開始</button>
+    <label>字幕
+      <select id="lang">
+        <option value="">オフ</option>
+        <option value="ja-JP">日本語</option>
+        <option value="en-US">English</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="aec"> エコーキャンセル</label>
+  </div>
+  <p class="note" id="langNote">字幕はブラウザの音声認識 (Web Speech API) を使います。Chrome では音声が Google のサーバーへ送られます。話者の判定 (Who) は端末内で完結します。</p>
+  <p class="note">エコーキャンセル: AI との会話ではオン (AI の声を拾わない)。スピーカーで動画を流して「他の人」役にするときはオフ。</p>
+
+  <h2>速度とメモリ</h2>
+  <div class="stats">
+    <div class="stat"><span>録音の長さ</span><b id="dur">—</b></div>
+    <div class="stat"><span>番号が付いた話者</span><b id="spk">—</b></div>
+    <div class="stat"><span>推論時間 (直近)</span><b id="last">—</b></div>
+    <div class="stat"><span>推論時間 (平均 / 最大)</span><b id="avg">—</b></div>
+    <div class="stat"><span>往復レイテンシ</span><b id="rtt">—</b></div>
+    <div class="stat"><span>発話終了 → 判定</span><b id="gateLat">—</b></div>
+    <div class="stat"><span>サーバー RSS</span><b id="rss">—</b></div>
+    <div class="stat"><span>ピーク RSS</span><b id="peak">—</b></div>
+    <div class="stat"><span>モデル読み込み</span><b id="load">—</b></div>
+  </div>
+  <p class="note" id="modeNote"></p>
+
+  <h2>直近40秒のタイムライン</h2>
+  <div class="panel timeline" id="timeline"><p class="note">録音を開始すると表示されます。</p></div>
+
+  <h2>発話ごとの判定</h2>
+  <div class="panel list" id="gate"><p class="note">本人の声を登録して録音すると、発話が終わるたびに判定結果が並びます。</p></div>
+
+  <h2>字幕</h2>
+  <div class="panel list" id="captions"><p class="note">字幕をオンにすると、話者ラベル付きで表示されます。</p></div>
+
+  <h2>AI に渡すテキスト</h2>
+  <pre class="panel" id="llm" style="white-space:pre-wrap;margin:0;font-size:13px">字幕をオンにすると、AI に渡す形のテキストがここに並びます。</pre>
+</main>
+
+<script>
+const COLORS = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#b07aa1", "#76b7b2", "#c9a227", "#9c755f"];
+const WORKLET = `registerProcessor("tap", class extends AudioWorkletProcessor {
+  process([input]) { if (input[0]) this.port.postMessage(input[0].slice()); return true; }
+});`;
+// Who misses the voice in ~20% of clips of 10s or less, 3-6% at 15-20s.
+const ENROLL_SEC = 15, VIEW_SEC = 40;
+const PAUSE = 0.6;   // silence that ends an utterance, as a VAD would wait for
+const MIN_UTT = 0.4; // shorter blips are not utterances
+const PIECE = 8;     // an utterance still going after this long is decided in pieces; Who sees at least 15s back
+const LATE = 2;      // seconds after an utterance ends past which a decision is too late to act on
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const esc = (s) => s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+const fmt = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
+const concat = (parts) => {
+  const out = new Float32Array(parts.reduce((n, c) => n + c.length, 0));
+  let o = 0;
+  for (const c of parts) { out.set(c, o); o += c.length; }
+  return out;
+};
+
+let enrolled = false, running = false, mic, t0 = 0, pending = [], rec = null;
+let turns = [], duration = 0, captions = [], interim = null, times = [], decisions = [], decidedTo = {};
+
+// Speaker ids come from the server and hold for the whole recording; null is a voice without one yet.
+// With enrollment, id 0 is the enrolled voice.
+const letter = (i) => String.fromCharCode(65 + (i % 26));
+const label = (s) => (s == null ? "新しい声" : enrolled ? (s === 0 ? "本人" : `話者 ${letter(s - 1)}`) : `話者 ${letter(s)}`);
+const color = (s) => (s == null ? "#888" : COLORS[s % COLORS.length]);
+const chip = (s) => `<span class="chip" style="background:${color(s)}">${label(s)}</span>`;
+
+fetch("/stats").then((r) => r.json()).then((r) => { showMem(r); setEnrolled(r.enrolled); });
+
+$("start").onclick = () => (running ? stop() : start());
+$("lang").onchange = () => { if (running) { stopCaptions(); startCaptions(); } };
+$("enroll").onclick = enroll;
+$("unenroll").onclick = async () => { await fetch("/enroll", { method: "DELETE" }); setEnrolled(false); };
+
+function setEnrolled(on, text) {
+  enrolled = on;
+  $("unenroll").hidden = !on;
+  $("enrollStatus").textContent = text ?? (on ? "登録済み。" : "未登録。本人だけが話している状態で15秒録ります。");
+  $("modeNote").textContent = "毎回「各話者の声 (1人12秒、登録した声は15秒) + 直近の音声」を合計55秒以内で解析するので、推論時間は録音が長くなっても伸びません。話者が4人を超えると60秒を超えて遅いグラフに切り替わります。";
+}
+
+async function openMic(onSamples) {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: $("aec").checked, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
+  });
+  const ctx = new AudioContext({ sampleRate: 16000 });
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })));
+  const tap = new AudioWorkletNode(ctx, "tap");
+  tap.port.onmessage = (e) => onSamples(e.data);
+  ctx.createMediaStreamSource(stream).connect(tap).connect(ctx.destination); // outputs silence
+  return { ctx, close: () => { stream.getTracks().forEach((t) => t.stop()); ctx.close(); } };
+}
+
+async function enroll() {
+  const parts = [];
+  $("enroll").disabled = $("start").disabled = true;
+  try {
+    const m = await openMic((s) => parts.push(s));
+    for (let i = ENROLL_SEC; i > 0; i--) {
+      $("enrollStatus").textContent = `本人だけで話し続けてください… 残り ${i} 秒`;
+      await sleep(1000);
+    }
+    m.close();
+    const res = await fetch("/enroll", { method: "POST", body: concat(parts) });
+    const r = await res.json();
+    if (!res.ok) return setEnrolled(false, r.error);
+    setEnrolled(true, `登録済み: 声 ${r.speech.toFixed(1)} 秒${r.speakerCount > 1 ? " (別の声も混ざっています。録り直しを推奨)" : ""}`);
+  } finally {
+    $("enroll").disabled = $("start").disabled = false;
+  }
+}
+
+async function start() {
+  mic = await openMic((s) => pending.push(s));
+  await fetch("/reset", { method: "POST" });
+  turns = []; duration = 0; captions = []; interim = null; times = []; pending = []; decisions = []; decidedTo = {};
+  t0 = mic.ctx.currentTime;
+  running = true;
+  $("start").textContent = "停止";
+  $("start").classList.add("on");
+  $("enroll").disabled = $("unenroll").disabled = true;
+  startCaptions();
+  render();
+  loop();
+}
+
+function stop() {
+  running = false;
+  stopCaptions();
+  mic.close();
+  $("start").textContent = "録音開始";
+  $("start").classList.remove("on");
+  $("enroll").disabled = $("unenroll").disabled = false;
+}
+
+async function loop() {
+  while (running || pending.length) {
+    await sleep(300);
+    if (!pending.length) continue;
+    const body = concat(pending);
+    pending = [];
+    const sent = performance.now();
+    const res = await fetch("/chunk", { method: "POST", body });
+    const r = await res.json();
+    if (!res.ok) { console.error(r.error); continue; }
+    turns = r.turns; duration = r.duration;
+    if (r.diarizeMs) times.push(r.diarizeMs);
+    $("dur").textContent = fmt(r.duration);
+    $("spk").textContent = r.speakers.length;
+    if (r.diarizeMs) {
+      $("last").textContent = `${r.diarizeMs.toFixed(0)} ms`;
+      $("avg").textContent = `${(times.reduce((a, b) => a + b) / times.length).toFixed(0)} / ${Math.max(...times).toFixed(0)} ms`;
+    }
+    $("rtt").textContent = `${(performance.now() - sent).toFixed(0)} ms`;
+    showMem(r);
+    if (r.enrolled !== enrolled) setEnrolled(r.enrolled); // server restarted, enrollment gone
+    if (enrolled) decide();
+    render();
+  }
+}
+
+// The gate only asks "the enrolled voice or not", so everyone else, voices without an id included,
+// is one class. Each class's turns, joined across short gaps, are its utterances.
+// An utterance is decided once PAUSE seconds of silence follow it, and only the part after what that
+// class already decided counts, so a turn that Who later extends is not decided twice. A long
+// utterance is decided in pieces while it goes on, before its start leaves Who's recent window.
+function decide() {
+  const segs = [];
+  for (const t of turns.map((t) => ({ ...t, target: t.speaker === 0 })).sort((a, b) => b.target - a.target || a.start - b.start)) {
+    const last = segs.at(-1);
+    if (last && last.target === t.target && t.start - last.end < 0.5) last.end = Math.max(last.end, t.end);
+    else segs.push(t);
+  }
+  const now = mic.ctx.currentTime - t0;
+  for (const s of segs.sort((a, b) => a.end - b.end)) {
+    const start = Math.max(s.start, decidedTo[s.target] ?? 0);
+    const open = s.end > duration - PAUSE; // still talking
+    const end = open ? duration - PAUSE : s.end;
+    if (end - start < (open ? PIECE : MIN_UTT)) continue;
+    decidedTo[s.target] = end;
+    if (now - end > LATE) continue; // Who relabeled audio a live gate has already sent or dropped
+    decisions.push({ target: s.target, start, end, open, latency: now - end });
+    if (!open) $("gateLat").textContent = `${(now - end).toFixed(2)} s`;
+  }
+}
+
+function showMem(r) {
+  $("rss").textContent = `${r.rssMB.toFixed(0)} MB`;
+  $("peak").textContent = `${r.peakMB.toFixed(0)} MB`;
+  if (r.loadMs != null) $("load").textContent = `${(r.loadMs / 1000).toFixed(1)} s`;
+}
+
+function startCaptions() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const lang = $("lang").value;
+  if (!lang) return;
+  if (!SR) { $("langNote").textContent = "このブラウザは音声認識に対応していません。Chrome か Safari を使ってください。"; return; }
+  rec = new SR();
+  rec.lang = lang;
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.onresult = (e) => {
+    const now = mic.ctx.currentTime - t0;
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      // ponytail: start/end come from when recognizer events arrive (about ±0.5s); use a recognizer with word timestamps if that is too loose.
+      interim ??= { start: Math.max(0, now - 0.5) };
+      interim.text = e.results[i][0].transcript;
+      if (e.results[i].isFinal) { interim.end = now; captions.push(interim); interim = null; }
+    }
+    render();
+  };
+  rec.onend = () => running && rec.start(); // Chrome ends a session after a pause
+  rec.start();
+}
+
+function stopCaptions() {
+  if (!rec) return;
+  rec.onend = null;
+  rec.abort();
+  rec = null;
+  interim = null;
+}
+
+function speakerOf(c) {
+  const overlap = {};
+  for (const t of turns) {
+    if (t.speaker == null) continue;
+    const o = Math.min(t.end, c.end ?? duration) - Math.max(t.start, c.start);
+    if (o > 0) overlap[t.speaker] = (overlap[t.speaker] || 0) + o;
+  }
+  const best = Object.entries(overlap).sort((a, b) => b[1] - a[1])[0];
+  return best ? +best[0] : null;
+}
+
+function render() {
+  const lo = Math.max(0, duration - VIEW_SEC);
+  const speakers = [...new Set(turns.map((t) => t.speaker))].sort((a, b) => (a ?? 99) - (b ?? 99));
+  $("timeline").innerHTML = speakers.length
+    ? speakers.map((s) => `<div class="row"><span class="lab" style="color:${color(s)}">${label(s)}</span><div class="lane">${
+        turns.filter((t) => t.speaker === s && t.end > lo).map((t) => {
+          const a = Math.max(t.start, lo);
+          return `<i style="left:${((a - lo) / VIEW_SEC) * 100}%;width:${((t.end - a) / VIEW_SEC) * 100}%;background:${color(s)}"></i>`;
+        }).join("")}</div></div>`).join("")
+    : `<p class="note">${running ? "話してください…" : "録音を開始すると表示されます。"}</p>`;
+
+  if (decisions.length) {
+    $("gate").innerHTML = decisions.slice().reverse().map((d) => `<p>${
+      d.target ? `${chip(0)}<span class="t">${fmt(d.start)}–${fmt(d.end)}</span><span>→ STT・AI へ送る</span>`
+               : `<span class="chip" style="background:#888">他の人</span><span class="t">${fmt(d.start)}–${fmt(d.end)}</span><span class="ignored">無視</span>`
+    }<span class="t">${d.open ? "話し中 (続きあり)" : `判定まで ${d.latency.toFixed(2)} s`}</span></p>`).join("");
+  }
+
+  if (!$("lang").value && !captions.length) return;
+  // Fix a caption's speaker once it has one; a voice still without an id may get one a few seconds later.
+  for (const c of captions) if (c.speaker == null && duration - c.end > 1.5) c.speaker = speakerOf(c);
+  const line = (c, cls = "") => {
+    const s = c.speaker ?? speakerOf(c);
+    const ignored = enrolled && s !== 0;
+    return `<p class="${cls}">${chip(s)}<span class="t">${fmt(c.start)}</span><span class="${ignored ? "ignored" : ""}">${esc(c.text)}</span></p>`;
+  };
+  $("captions").innerHTML = (interim ? line(interim, "interim") : "") + captions.slice().reverse().map((c) => line(c)).join("");
+  $("llm").textContent = captions.map((c) => `[${label(c.speaker ?? speakerOf(c))} ${fmt(c.start)}] ${c.text}`).join("\n");
+}
+</script>
+</body>
+</html>
